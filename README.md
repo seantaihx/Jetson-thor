@@ -42,7 +42,7 @@ Then export:
 ```bash
 export CUDA_HOME=/path/to/your/cuda        # e.g. /usr/local/cuda-12.6
 export PATH=$CUDA_HOME/bin:$PATH
-export VLLM_USE_FLASHINFER_SAMPLER=0       # avoids JIT compile issues, if CUDA is found, then dont need this line
+export VLLM_USE_FLASHINFER_SAMPLER=0       # avoids JIT compile issues, and CUDA version mismatch
 ```
 
 To make permanent, add those lines to ~/.bashrc and run `source ~/.bashrc`
