@@ -310,8 +310,8 @@ def parse_args():
     defines all the CLI flags so you can tweak the benchmark without editing the file.
     '''
     p = argparse.ArgumentParser()
-    p.add_argument("--runs",                  type=int,   default=3)
-    p.add_argument("--warmup-runs",           type=int,   default=1)
+    p.add_argument("--runs",                  type=int,   default=20)
+    p.add_argument("--warmup-runs",           type=int,   default=2)
     p.add_argument("--max-tokens",            type=int,   default=4096)
     p.add_argument("--temperature",           type=float, default=0.0)
     p.add_argument("--top-p",                 type=float, default=1.0)
