@@ -1,0 +1,67 @@
+BabelStream
+Version: 5.0
+Implementation: CUDA
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 33554432
+Precision: double
+Array size: 268.4 MB
+Total size: 805.3 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA Thor" 20 SMs(11,0) Memory Bus Width: 256-bit, ECC is OFF
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 80 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        233373.736  0.00230     0.00270     0.00243     
+Mul         227772.293  0.00236     0.00283     0.00250     
+Add         228121.259  0.00353     0.00394     0.00367     
+Triad       227842.117  0.00353     0.00396     0.00369     
+Dot         237441.189  0.00226     0.00290     0.00251     
+
+
+
+
+BabelStream
+Version: 5.0
+Implementation: CUDA
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 33554432
+Precision: double
+Array size: 268.4 MB
+Total size: 805.3 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA Thor" 20 SMs(11,0) Memory Bus Width: 256-bit, ECC is OFF
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 80 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        233729.439  0.00230     0.00266     0.00241     
+Mul         229391.625  0.00234     0.00272     0.00248     
+Add         228006.938  0.00353     0.00394     0.00367     
+Triad       228886.013  0.00352     0.00391     0.00369     
+Dot         237813.201  0.00226     0.00287     0.00248     
+
+
+
+
+BabelStream
+Version: 5.0
+Implementation: CUDA
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 33554432
+Precision: double
+Array size: 268.4 MB
+Total size: 805.3 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA Thor" 20 SMs(11,0) Memory Bus Width: 256-bit, ECC is OFF
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 80 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        235013.895  0.00228     0.00265     0.00239     
+Mul         229001.120  0.00234     0.00282     0.00246     
+Add         227607.779  0.00354     0.00388     0.00364     
+Triad       227975.955  0.00353     0.00392     0.00366     
+Dot         237484.882  0.00226     0.00279     0.00246     
+stai@jetson-thor-csd:~/jetson-a/jetson-a-code/BabelStream$ 
+
