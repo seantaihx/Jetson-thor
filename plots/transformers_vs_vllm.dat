@@ -1,4 +1,0 @@
-# model vllm_tps transformers_tps vllm_gpu_util transformers_gpu_util vllm_gpu_power transformers_gpu_power
-"llama" 15.110663 13.726295 97.320478 93.562367 17.667890 16.351147
-"gemma" 23.881226 14.759401 97.273681 86.919085 17.337334 15.171764
-"gpt" 56.630838 2.640380 96.988556 53.421079 23.996242 12.078177

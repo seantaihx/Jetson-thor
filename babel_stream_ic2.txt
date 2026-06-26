@@ -1,0 +1,64 @@
+BabelStream
+Version: 5.0
+Implementation: CUDA
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 33554432
+Precision: double
+Array size: 268.4 MB
+Total size: 805.3 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA A100-SXM4-80GB" 108 SMs(8,0) Memory: 1593 MHz x 5120-bit = 2039.040000 GB/s PEAK, ECC is ON
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 432 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        1729643.331 0.00031     0.00034     0.00031     
+Mul         1684353.743 0.00032     0.00033     0.00032     
+Add         1753479.208 0.00046     0.00047     0.00046     
+Triad       1765012.499 0.00046     0.00046     0.00046     
+Dot         1663545.077 0.00032     0.00040     0.00033     
+
+
+
+BabelStream
+Version: 5.0
+Implementation: CUDA
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 33554432
+Precision: double
+Array size: 268.4 MB
+Total size: 805.3 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA A100-SXM4-80GB" 108 SMs(8,0) Memory: 1593 MHz x 5120-bit = 2039.040000 GB/s PEAK, ECC is ON
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 432 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        1722053.720 0.00031     0.00032     0.00031     
+Mul         1679280.182 0.00032     0.00033     0.00032     
+Add         1752052.424 0.00046     0.00049     0.00046     
+Triad       1764737.884 0.00046     0.00046     0.00046     
+Dot         1667161.176 0.00032     0.00034     0.00033     
+
+
+
+BabelStream
+Version: 5.0
+Implementation: CUDA
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 33554432
+Precision: double
+Array size: 268.4 MB
+Total size: 805.3 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA A100-SXM4-80GB" 108 SMs(8,0) Memory: 1593 MHz x 5120-bit = 2039.040000 GB/s PEAK, ECC is ON
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 432 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        1737862.504 0.00031     0.00032     0.00031     
+Mul         1682110.858 0.00032     0.00033     0.00032     
+Add         1753880.193 0.00046     0.00055     0.00046     
+Triad       1765271.722 0.00046     0.00049     0.00046     
+Dot         1650468.243 0.00033     0.00034     0.00033     
+

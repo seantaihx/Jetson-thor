@@ -266,7 +266,7 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--vllm-json", type=Path, required=True)
     p.add_argument("--transformers-json", type=Path, required=True)
-    p.add_argument("--out-dir", type=Path, default=Path("plots"))
+    p.add_argument("--out-dir", type=Path, default=Path("plots_ic2"))
     p.add_argument("--title", default="Transformers vs vLLM")
     p.add_argument("--throughput-yrange", default=None, help="Example: [0:140]. Default: auto")
     p.add_argument("--power-yrange", default=None, help="Example: [0:300]. Default: auto")
