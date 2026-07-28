@@ -1,0 +1,5 @@
+spearman,phase=decode,n=6120
+,GPU util,Dyn power,Tok/s
+GPU util,1.000000,0.504384,0.108191
+Dyn power,0.504384,1.000000,0.805474
+Tok/s,0.108191,0.805474,1.000000

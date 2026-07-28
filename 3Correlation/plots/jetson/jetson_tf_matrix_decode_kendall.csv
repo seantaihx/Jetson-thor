@@ -1,0 +1,5 @@
+kendall,phase=decode,n=6120
+,GPU util,Dyn power,Tok/s
+GPU util,1.000000,0.376442,0.070371
+Dyn power,0.376442,1.000000,0.568674
+Tok/s,0.070371,0.568674,1.000000

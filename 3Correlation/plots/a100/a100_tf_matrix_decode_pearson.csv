@@ -1,0 +1,5 @@
+pearson,phase=decode,n=6120
+,GPU util,Dyn power,Tok/s
+GPU util,1.000000,0.897813,0.561666
+Dyn power,0.897813,1.000000,0.585010
+Tok/s,0.561666,0.585010,1.000000
