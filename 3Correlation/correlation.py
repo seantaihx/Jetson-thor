@@ -430,6 +430,11 @@ def draw_scatter(rows, phase, labels, outpath):
     if not _HAVE_MPL:
         return None
     groups = sorted({r["group"] for r in rows})
+    # One consistent color per source across ALL panels, so a single shared
+    # legend is truthful even if one group is missing a run (e.g. OOM skip).
+    all_sources = sorted({r["source"] for r in rows})
+    _cmap = plt.get_cmap("tab20" if len(all_sources) > 10 else "tab10")
+    scolor = {s: _cmap(i % _cmap.N) for i, s in enumerate(all_sources)}
     ng = len(groups)
     ncols = 1 if ng <= 1 else (2 if ng <= 4 else 3)
     nrows = max(1, math.ceil(ng / ncols))
@@ -441,7 +446,8 @@ def draw_scatter(rows, phase, labels, outpath):
         for s in sorted({r["source"] for r in gr}):
             x, y = _finite_xy([r for r in gr if r["source"] == s], "util", "tps")
             if x.size:
-                ax.scatter(x, y, s=11, alpha=0.55, label=s, edgecolors="none")
+                ax.scatter(x, y, s=11, alpha=0.55, color=scolor[s],
+                           edgecolors="none")
         x, y = _finite_xy(gr, "util", "tps")
         if x.size:
             ax.text(0.03, 0.97, _coef_note(x, y), transform=ax.transAxes,
@@ -457,13 +463,22 @@ def draw_scatter(rows, phase, labels, outpath):
         ax.set_xlabel(f"{labels['util']} (%)")
         ax.set_ylabel("tokens / s")
         ax.grid(alpha=0.25)
-        if len({r["source"] for r in gr}) > 1:
-            ax.legend(fontsize=7, markerscale=1.6, ncol=2, loc="lower right")
     for k in range(ng, nrows * ncols):
         axes[k // ncols][k % ncols].axis("off")
+    # ONE shared legend below the panels (every panel uses the same colors)
+    # instead of a duplicate legend covering the data inside each panel.
+    bottom = 0.0
+    if len(all_sources) > 1:
+        ncol_leg = min(8, len(all_sources))
+        nrow_leg = math.ceil(len(all_sources) / ncol_leg)
+        handles = [plt.Line2D([0], [0], marker="o", ls="", color=scolor[s],
+                              markersize=6, label=s) for s in all_sources]
+        fig.legend(handles=handles, loc="lower center", ncol=ncol_leg,
+                   fontsize=7, framealpha=0.9, bbox_to_anchor=(0.5, 0.005))
+        bottom = 0.03 + 0.03 * nrow_leg
     fig.suptitle(f"GPU utilization  vs  tokens / second   —   phase = {phase}"
                  f"   (each panel = one group; color = model)", fontsize=12)
-    fig.tight_layout(rect=[0, 0, 1, 0.96])
+    fig.tight_layout(rect=[0, bottom, 1, 0.96])
     fig.savefig(outpath, dpi=150)
     plt.close(fig)
     return outpath
