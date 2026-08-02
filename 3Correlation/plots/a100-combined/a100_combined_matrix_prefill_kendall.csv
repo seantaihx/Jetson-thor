@@ -1,0 +1,5 @@
+kendall,phase=prefill,n=48
+,GPU util,Dyn power,Tok/s
+GPU util,1.000000,0.185579,0.316470
+Dyn power,0.185579,1.000000,0.523050
+Tok/s,0.316470,0.523050,1.000000

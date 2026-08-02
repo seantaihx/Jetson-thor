@@ -1,0 +1,5 @@
+pearson,phase=prefill,n=48
+,GPU util,Dyn power,Tok/s
+GPU util,1.000000,0.269572,0.119402
+Dyn power,0.269572,1.000000,0.823959
+Tok/s,0.119402,0.823959,1.000000

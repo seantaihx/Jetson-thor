@@ -1,0 +1,5 @@
+spearman,phase=prefill,n=48
+,GPU util,Dyn power,Tok/s
+GPU util,1.000000,0.226938,0.435019
+Dyn power,0.226938,1.000000,0.700825
+Tok/s,0.435019,0.700825,1.000000
