@@ -1,22 +1,18 @@
-set terminal pngcairo size 1460,650 enhanced font 'Verdana,16'
+set terminal pngcairo size 1200,600 enhanced font 'Verdana,16'
 set style data histogram
 set style histogram cluster gap 1
 set style fill solid border -1
 set boxwidth 0.9
-set yrange [0:100]
-set ylabel "Average Utilization (%)"
+set yrange [0:250]
+set ylabel "Throughput (tokens/s)"
 set xlabel "Model"
 set xtics rotate by -30
 set key outside right #above #fixed top horizontal Right noreverse noenhanced autotitle nobox
-set title "Jetson-Thor vs IC2 vs H200"
+set title "NVIDIA H200 NVL"
 set label "llama = meta-llama/Meta-Llama-3.1-8B-Instruct" at screen 0.745, screen 0.420 left font 'Verdana,8' front
 set label "gemma = google/gemma-4-E4B-it" at screen 0.745, screen 0.370 left font 'Verdana,8' front
 set label "gpt = openai/gpt-oss-20b" at screen 0.745, screen 0.320 left font 'Verdana,8' front
 set label "qwen = Qwen/Qwen2.5-7B-Instruct" at screen 0.745, screen 0.270 left font 'Verdana,8' front
-set output 'utilization_combined.png'
-plot 'combined_transformers_vs_vllm.dat' using 8:xtic(1) title 'JT vLLM', \
-     '' using 9:xtic(1) title 'JT Transformers', \
-     '' using 10:xtic(1) title 'IC2 vLLM', \
-     '' using 11:xtic(1) title 'IC2 Transformers', \
-     '' using 12:xtic(1) title 'H200 vLLM', \
-     '' using 13:xtic(1) title 'H200 Transformers'
+set output 'throughput_transformers_vs_vllm.png'
+plot 'transformers_vs_vllm.dat' using 2:xtic(1) title 'vLLM', \
+     '' using 3:xtic(1) title 'Transformers'

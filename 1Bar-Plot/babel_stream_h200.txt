@@ -1,0 +1,57 @@
+BabelStream
+Version: 5.0
+Implementation: CUDA
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 268435456
+Precision: double
+Array size: 2147.5 MB
+Total size: 6442.5 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA H200 NVL" 132 SMs(9,0) Memory: 3201 MHz x 6016-bit = 4814.304000 GB/s PEAK, ECC is ON
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 528 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        3877552.633 0.00111     0.00111     0.00111     
+Mul         3861342.405 0.00111     0.00112     0.00111     
+Add         4224294.843 0.00153     0.00153     0.00153     
+Triad       4228203.956 0.00152     0.00153     0.00152     
+Dot         4318155.793 0.00099     0.00101     0.00100    
+
+
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 268435456
+Precision: double
+Array size: 2147.5 MB
+Total size: 6442.5 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA H200 NVL" 132 SMs(9,0) Memory: 3201 MHz x 6016-bit = 4814.304000 GB/s PEAK, ECC is ON
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 528 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        3876642.663 0.00111     0.00111     0.00111     
+Mul         3861099.416 0.00111     0.00112     0.00111     
+Add         4224098.193 0.00153     0.00153     0.00153     
+Triad       4228065.211 0.00152     0.00153     0.00152     
+Dot         4321849.198 0.00099     0.00100     0.00100   
+
+
+
+
+Running  Classic kernels 100 times in  Classic order 
+Number of elements: 268435456
+Precision: double
+Array size: 2147.5 MB
+Total size: 6442.5 MB
+CUDA Driver: 13000
+CUDA Device 0: "NVIDIA H200 NVL" 132 SMs(9,0) Memory: 3201 MHz x 6016-bit = 4814.304000 GB/s PEAK, ECC is ON
+Memory Allocation: DEFAULT
+Parallel for kernel config: thread blocks of size 256
+Reduction kernel config: 528 groups of (fixed) size 1024
+Function    MB/s        Min (sec)   Max         Average     
+Copy        3877587.640 0.00111     0.00111     0.00111     
+Mul         3862210.475 0.00111     0.00112     0.00111     
+Add         4223713.253 0.00153     0.00153     0.00153     
+Triad       4228231.706 0.00152     0.00153     0.00152     
+Dot         4318416.296 0.00099     0.00100     0.00100  

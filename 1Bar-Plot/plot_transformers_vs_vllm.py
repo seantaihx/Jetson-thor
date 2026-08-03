@@ -262,14 +262,47 @@ def run_gnuplot(gp_paths: list[Path], cwd: Path) -> None:
         subprocess.run(["gnuplot", gp.name], cwd=cwd, check=True)
 
 
+def yrange_arg(text: str) -> str:
+    """Accept '[MIN:MAX]' or 'MIN:MAX' and return gnuplot '[MIN:MAX]'.
+
+    MIN/MAX may be numbers or '*' (auto), e.g. '0:250', '[0:*]'.
+    A fixed MIN and MAX pins the axis so plots from different
+    devices/engines are directly comparable side by side.
+    """
+    inner = text.strip()
+    if inner.startswith("[") and inner.endswith("]"):
+        inner = inner[1:-1]
+    parts = inner.split(":")
+    if len(parts) != 2:
+        raise argparse.ArgumentTypeError(
+            f"y-range must look like MIN:MAX or [MIN:MAX], got: {text!r}")
+    for part in (p.strip() for p in parts):
+        if part == "*" or part == "":
+            continue
+        try:
+            float(part)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"y-range bounds must be numbers or '*', got: {text!r}")
+    return f"[{parts[0].strip() or '*'}:{parts[1].strip() or '*'}]"
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--vllm-json", type=Path, required=True)
     p.add_argument("--transformers-json", type=Path, required=True)
     p.add_argument("--out-dir", type=Path, default=Path("plots_ic2"))
     p.add_argument("--title", default="Transformers vs vLLM")
-    p.add_argument("--throughput-yrange", default=None, help="Example: [0:140]. Default: auto")
-    p.add_argument("--power-yrange", default=None, help="Example: [0:300]. Default: auto")
+    p.add_argument("--throughput-yrange", type=yrange_arg, default=None,
+                   help="fixed y-axis MIN:MAX (e.g. 0:250 or [0:250]); "
+                        "use the same value across devices to align plots. "
+                        "Default: auto")
+    p.add_argument("--util-yrange", type=yrange_arg, default="[0:100]",
+                   help="fixed y-axis MIN:MAX for the utilization chart. "
+                        "Default: 0:100")
+    p.add_argument("--power-yrange", type=yrange_arg, default=None,
+                   help="fixed y-axis MIN:MAX (e.g. 0:600); use the same "
+                        "value across devices to align plots. Default: auto")
     p.add_argument("--run-gnuplot", action="store_true")
     return p.parse_args()
 
@@ -309,7 +342,7 @@ def main() -> None:
             output_png="utilization_transformers_vs_vllm.png",
             title=args.title,
             columns=(4, 5),
-            yrange="[0:100]",
+            yrange=args.util_yrange,
             legend_lines=legend_lines,
         )
     )
