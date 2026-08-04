@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 vLLM-based benchmark — mirrors get_transformers_metrics.py metrics exactly.
 
@@ -12,6 +13,7 @@ be recorded as None — this is expected and identical in both scripts.
 
 import argparse                          # parses command-line arguments like --runs 5
 import gc                                # Python garbage collector, used to force memory cleanup
+import os                                # CUDA_VISIBLE_DEVICES lookup for NVML device pick
 import json                              # read/write JSON files
 import statistics as stats               # mean/stdev — same module used in transformers script
 import threading                         # run hardware sampler in parallel with inference
@@ -33,11 +35,11 @@ USER_PROMPT = (
 )
 
 MODEL_SPECS = [
-    {"choice": "1", "name": "llama", "model_id": "meta-llama/Meta-Llama-3.1-8B-Instruct"},
-    {"choice": "2", "name": "gemma", "model_id": "google/gemma-4-E4B-it"},
-    {"choice": "3", "name": "gpt",   "model_id": "openai/gpt-oss-20b"},
+    {"choice": "1", "name": "llama", "model_id": "/hpcgpfs01/scratch/stai/models/Llama-3.1-8B-Instruct"},
+    {"choice": "2", "name": "gemma", "model_id": "/hpcgpfs01/scratch/stai/models/gemma-4-E4B-it"},
+    {"choice": "3", "name": "gpt",   "model_id": "/hpcgpfs01/scratch/stai/models/gpt-oss-20b"},
+    {"choice": "4", "name": "qwen",  "model_id": "/hpcgpfs01/scratch/stai/models/Qwen2.5-7B-Instruct"},
 ]
-
 
 # -------------
 # Utilities
@@ -190,6 +192,73 @@ def init_nvml():
     return handles, info                                # handles used for sampling; info saved into JSON metadata
 
 
+def _resolve_sampled_handles(nv, all_handles, selector):
+    """Pick which NVML device handle(s) to sample for power/utilization.
+
+    Many SLURM clusters honour --gres=gpu:1 for CUDA (CUDA_VISIBLE_DEVICES)
+    but NOT for NVML: nvmlDeviceGetCount() still returns every physical GPU
+    on the node, so summing over all handles adds the idle siblings' power
+    (~64 W each on an A100) and averages utilization DOWN by the GPU count.
+    This resolves the single GPU the job actually computes on, so power and
+    util are correct even then.
+
+      selector 'auto'/None : the compute GPU, from CUDA_VISIBLE_DEVICES (or
+                             the only GPU when just one is visible).
+      selector 'all'       : every visible GPU (old behaviour; power summed).
+      selector '<int>'     : that NVML index.
+      selector 'GPU-<uuid>': the device with that UUID.
+    Returns (handles, human_description).
+    """
+    n = len(all_handles)
+
+    def uuid_of(h):
+        try:
+            u = nv.nvmlDeviceGetUUID(h)
+            return u.decode() if isinstance(u, bytes) else u
+        except Exception:
+            return "?"
+
+    def by_index(i):
+        if 0 <= i < n:
+            return [all_handles[i]], f"NVML index {i} (uuid {uuid_of(all_handles[i])})"
+        return None
+
+    def by_uuid(u):
+        u = u.strip()
+        for i, h in enumerate(all_handles):
+            hu = uuid_of(h)
+            if hu == u or hu.endswith(u):
+                return [h], f"uuid {hu} (NVML index {i})"
+        return None
+
+    sel = (selector or "auto").strip()
+    if sel == "all":
+        return all_handles, f"all {n} visible GPU(s) (power SUMMED, util averaged)"
+    if sel != "auto":
+        r = (by_uuid(sel) if sel.startswith(("GPU-", "MIG-"))
+             else by_index(int(sel)) if sel.lstrip("-").isdigit() else None)
+        if r:
+            return r
+        print(f"WARNING: --nvml-device {sel!r} matched none of {n} visible "
+              "GPU(s); sampling all (may be polluted)")
+        return all_handles, f"all {n} visible GPU(s) (fallback)"
+    # auto: identify the compute GPU
+    cvd = [x for x in os.environ.get("CUDA_VISIBLE_DEVICES", "").split(",") if x]
+    if cvd:
+        first = cvd[0].strip()
+        r = (by_uuid(first) if first.startswith(("GPU-", "MIG-"))
+             else by_index(int(first)) if first.lstrip("-").isdigit() else None)
+        if r:
+            return r[0], r[1] + " [CUDA_VISIBLE_DEVICES]"
+    if n == 1:
+        return all_handles, f"the only visible GPU (uuid {uuid_of(all_handles[0])})"
+    print(f"WARNING: {n} GPUs visible to NVML but the compute GPU could not be "
+          "identified (CUDA_VISIBLE_DEVICES unset?); sampling ALL - power will "
+          "be summed. Pass --nvml-device <index|GPU-uuid>.")
+    return all_handles, f"all {n} visible GPU(s) (could not auto-pick)"
+
+
+
 def probe_nvml_support(handles):
     """
     Test which pynvml calls actually work on this hardware.
@@ -302,6 +371,62 @@ def sampler_thread(handles, nvml_support, stop_event, samples, interval_s):
         time.sleep(interval_s)                                                          # wait before next sample (default 0.25s = 4 Hz)
 
 
+def measure_idle_power(handles, nvml_support, seconds, interval_s):
+    """Mean GPU power over a quiescent window BEFORE any model is loaded —
+    the paper-style idle baseline. Subtracting it from the per-run average
+    gives dynamic power (the draw caused by inference itself, excluding
+    the platform's idle floor). Must run while the GPU is idle, so call it
+    before the first model load. Returns None if disabled/unsupported."""
+    if seconds <= 0 or not nvml_support.get("power"):
+        return None
+    readings = []
+    t_end = time.perf_counter() + seconds
+    print(f"Measuring idle power baseline for {seconds:g}s (GPU quiescent)...")
+    while time.perf_counter() < t_end:
+        s = sample_hardware(handles, nvml_support)
+        if s["gpu_power_w_total"] is not None:
+            readings.append(s["gpu_power_w_total"])
+        time.sleep(interval_s)
+    if not readings:
+        return None
+    idle = sum(readings) / len(readings)
+    print(f"Idle power baseline: {idle:.2f} W over {len(readings)} samples")
+    return idle
+
+
+def finalize_hardware(hw, idle_power_w, gen_time_s, token_count):
+    """Add idle-subtracted (dynamic) power and energy fields to one run's
+    hardware summary — same convention as the roofline pipeline:
+      dyn power = max(avg - idle, 0)
+      energy    = avg power x wall time   (no NVML energy counter on Jetson)
+      J/token   = energy / generated tokens
+    Peak power stays raw on purpose: a max cannot be idle-corrected by
+    subtracting a mean."""
+    avg_w = hw.get("gpu_power_w_avg")
+    hw["idle_power_w"] = idle_power_w
+    hw["gpu_power_w_dyn_avg"] = (
+        max(avg_w - idle_power_w, 0.0)
+        if avg_w is not None and idle_power_w is not None else None
+    )
+    hw["gpu_energy_j"] = (
+        avg_w * gen_time_s if avg_w is not None and gen_time_s else None
+    )
+    dyn = hw["gpu_power_w_dyn_avg"]
+    hw["gpu_energy_dyn_j"] = (
+        dyn * gen_time_s if dyn is not None and gen_time_s else None
+    )
+    tok = token_count or 0
+    hw["gpu_j_per_token"] = (
+        hw["gpu_energy_j"] / tok
+        if hw["gpu_energy_j"] is not None and tok > 0 else None
+    )
+    hw["gpu_j_per_token_dyn"] = (
+        hw["gpu_energy_dyn_j"] / tok
+        if hw["gpu_energy_dyn_j"] is not None and tok > 0 else None
+    )
+    return hw
+
+
 # -----------------------
 # Summarisation helpers
 # -----------------------
@@ -349,6 +474,12 @@ def model_summary(model_spec, runs, kv_params):
         "hardware": {
             "mean_gpu_power_w_avg":    mean(r["gpu_power_w_avg"]   for r in hw),
             "std_gpu_power_w_avg":      std(r["gpu_power_w_avg"]    for r in hw),
+            "mean_gpu_power_w_dyn_avg": mean(r.get("gpu_power_w_dyn_avg") for r in hw),
+            "std_gpu_power_w_dyn_avg":   std(r.get("gpu_power_w_dyn_avg")  for r in hw),
+            "mean_gpu_energy_dyn_j":    mean(r.get("gpu_energy_dyn_j")     for r in hw),
+            "std_gpu_energy_dyn_j":      std(r.get("gpu_energy_dyn_j")      for r in hw),
+            "mean_gpu_j_per_token_dyn": mean(r.get("gpu_j_per_token_dyn")  for r in hw),
+            "std_gpu_j_per_token_dyn":   std(r.get("gpu_j_per_token_dyn")   for r in hw),
             "mean_gpu_util_pct_avg":   mean(r["gpu_util_pct_avg"]  for r in hw),
             "std_gpu_util_pct_avg":     std(r["gpu_util_pct_avg"]   for r in hw),
             "mean_cpu_pct_avg":        mean(r["cpu_pct_avg"]        for r in hw),
@@ -373,6 +504,9 @@ def write_summary_tsv(path, summaries):
         "\tmean_kv_cache_used_mb\tstd_kv_cache_used_mb"
         "\tnum_layers\tnum_kv_heads\thead_dim\tdtype_bytes"
         "\tmean_gpu_power_w_avg\tstd_gpu_power_w_avg"
+        "\tmean_gpu_power_w_dyn_avg\tstd_gpu_power_w_dyn_avg"
+        "\tmean_gpu_energy_dyn_j\tstd_gpu_energy_dyn_j"
+        "\tmean_gpu_j_per_token_dyn\tstd_gpu_j_per_token_dyn"
         "\tmean_gpu_util_pct_avg\tstd_gpu_util_pct_avg"
         "\tmean_cpu_pct_avg\tstd_cpu_pct_avg"
         "\tmean_mem_pct_avg\tstd_mem_pct_avg"
@@ -398,6 +532,12 @@ def write_summary_tsv(path, summaries):
             str(kva.get("dtype_bytes")),
             str(hw["mean_gpu_power_w_avg"]),
             str(hw["std_gpu_power_w_avg"]),
+            str(hw.get("mean_gpu_power_w_dyn_avg")),
+            str(hw.get("std_gpu_power_w_dyn_avg")),
+            str(hw.get("mean_gpu_energy_dyn_j")),
+            str(hw.get("std_gpu_energy_dyn_j")),
+            str(hw.get("mean_gpu_j_per_token_dyn")),
+            str(hw.get("std_gpu_j_per_token_dyn")),
             str(hw["mean_gpu_util_pct_avg"]),
             str(hw["std_gpu_util_pct_avg"]),
             str(hw["mean_cpu_pct_avg"]),
@@ -429,8 +569,19 @@ def parse_args():
     p.add_argument("--top-p",                 type=float, default=1.0)
     p.add_argument("--seed",                  type=int,   default=1234)
     p.add_argument("--sample-interval-s",     type=float, default=0.25)
+    p.add_argument("--nvml-device",       default="auto",
+                   help="which GPU NVML samples for power/util: 'auto' "
+                        "(default; the compute GPU from CUDA_VISIBLE_DEVICES "
+                        "- correct even when a SLURM gpu:1 alloc still lets "
+                        "NVML see every GPU on the node), 'all' (sum every "
+                        "visible GPU - the old, polluted behaviour), or an "
+                        "explicit NVML index / 'GPU-<uuid>'.")
+    p.add_argument("--idle-baseline-s",       type=float, default=10.0,
+                   help="seconds of idle-power sampling before any model "
+                        "loads; subtracted per run to report dynamic power/"
+                        "energy (0 = disable)")
     p.add_argument("--tensor-parallel-size",  type=int,   default=1)
-    p.add_argument("--gpu-memory-utilization",type=float, default=0.3)
+    p.add_argument("--gpu-memory-utilization",type=float, default=0.6)
     p.add_argument("--max-model-len",         type=int,   default=None)
     p.add_argument("--trust-remote-code",     action="store_true")
     p.add_argument("--enforce-eager",         action="store_true")
@@ -447,11 +598,34 @@ def main():
     args = parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
-    handles, gpu_info = init_nvml()
+    all_handles, gpu_info = init_nvml()
+    # --gres=gpu:1 does NOT restrict NVML on many clusters (SDCC
+    # included): resolve the GPU this job computes on so power is
+    # not summed over idle siblings and util is not divided by 4.
+    handles, nvml_desc = _resolve_sampled_handles(
+        pynvml, all_handles, args.nvml_device)
+    print(f"[info] NVML sampling: {nvml_desc}")
 
     # Check once at startup which pynvml calls this board actually supports.
     # Jetson boards use unified memory and often block the memory query.
     nvml_support = probe_nvml_support(handles)
+
+    # Measurement-boundary guard: power sums and util averages run over
+    # EVERY GPU NVML can see. Idle siblings pollute both. On SLURM,
+    # allocate --gres=gpu:1 so telemetry covers only the working GPU.
+    if len(handles) > 1:
+        print(f"WARNING: {len(handles)} GPUs visible - power will SUM all of "
+              "them and utilization will AVERAGE them.")
+        print("         If only one GPU does the work (idle siblings), the")
+        print("         numbers are polluted. On SLURM use --gres=gpu:1.")
+
+    # Idle baseline BEFORE any model load (GPU quiescent) - enables the
+    # dynamic (idle-subtracted) power/energy fields on every run.
+    idle_power_w = measure_idle_power(
+        handles, nvml_support, args.idle_baseline_s, args.sample_interval_s)
+    if idle_power_w is None and args.idle_baseline_s > 0:
+        print("WARNING: idle baseline unavailable; dynamic power/energy "
+              "will be recorded as None.")
 
     results = {
         "meta": {
@@ -464,7 +638,12 @@ def main():
             "max_tokens":        args.max_tokens,
             "sample_interval_s": args.sample_interval_s,
             "hardware":          gpu_info,
+            "gpu_count":         len(handles),
+            "gpu_count_visible": len(all_handles),
+            "nvml_device":       nvml_desc,
             "nvml_support":      nvml_support,
+            "idle_power_w":      idle_power_w,
+            "idle_baseline_s":   args.idle_baseline_s,
             "inference_engine":  "vllm",
         },
         "runs":    [],
@@ -472,7 +651,7 @@ def main():
         "summary": {},
     }
 
-    json_path = args.out_dir / "vllm_benchmark_results.json"
+    json_path = args.out_dir / "vllm_benchmark_results_ic2_2.json"
 
     try:
         for spec in MODEL_SPECS:
@@ -548,9 +727,13 @@ def main():
                 start = time.perf_counter()
                 t.start()
                 outputs = llm.chat(prompt, params)
+                end = time.perf_counter()   # stop the clock when generation
+                                            # returns - BEFORE joining the
+                                            # sampler, whose sleep would
+                                            # otherwise add up to one
+                                            # interval to every run
                 stop_event.set()
                 t.join()
-                end = time.perf_counter()
 
                 result        = outputs[0]
                 output        = result.outputs[0]
@@ -571,6 +754,8 @@ def main():
                 )
 
                 hw_summary = summarize_samples(samples)
+                hw_summary = finalize_hardware(
+                    hw_summary, idle_power_w, gen_time_s, token_count)
 
                 run_record = {
                     "model_choice": spec["choice"],
@@ -612,6 +797,8 @@ def main():
                     "kv_cache_used_mb":   kv_cache_used_mb,
                     "finish_reason":      getattr(output, "finish_reason", None),
                     "gpu_power_w_avg":    hw_summary["gpu_power_w_avg"],
+                    "gpu_power_w_dyn_avg": hw_summary["gpu_power_w_dyn_avg"],
+                    "gpu_j_per_token_dyn": hw_summary["gpu_j_per_token_dyn"],
                     "gpu_util_pct_avg":   hw_summary["gpu_util_pct_avg"],
                     "cpu_pct_avg":        hw_summary["cpu_pct_avg"],
                     "mem_pct_avg":        hw_summary["mem_pct_avg"],
@@ -643,7 +830,7 @@ def main():
         # -----------------------------------------------------------------------
         save_json(json_path, results)
 
-        tsv_path = args.out_dir / "vllm_summary.tsv"
+        tsv_path = args.out_dir / "vllm_summary_ic2_2.tsv"
         write_summary_tsv(tsv_path, results["summary"])
 
         print("\nFinal summary")
@@ -663,6 +850,8 @@ def main():
             print(f"  Head dim:               {kva.get('head_dim')}")
             print(f"  Dtype bytes:            {kva.get('dtype_bytes')}")
             print(f"  Mean GPU power (W):     {fmt(hw['mean_gpu_power_w_avg'])} ± {fmt(hw['std_gpu_power_w_avg'])}")
+            print(f"  Mean GPU dyn power (W): {fmt(hw.get('mean_gpu_power_w_dyn_avg'))} ± {fmt(hw.get('std_gpu_power_w_dyn_avg'))}  (idle subtracted)")
+            print(f"  Mean dyn J/token:       {fmt(hw.get('mean_gpu_j_per_token_dyn'))} ± {fmt(hw.get('std_gpu_j_per_token_dyn'))}")
             print(f"  Mean GPU util (%):      {fmt(hw['mean_gpu_util_pct_avg'])} ± {fmt(hw['std_gpu_util_pct_avg'])}")
             print(f"  Mean CPU util (%):      {fmt(hw['mean_cpu_pct_avg'])} ± {fmt(hw['std_cpu_pct_avg'])}")
             print(f"  Mean memory util (%):   {fmt(hw['mean_mem_pct_avg'])} ± {fmt(hw['std_mem_pct_avg'])}")
