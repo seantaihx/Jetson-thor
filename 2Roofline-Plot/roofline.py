@@ -76,6 +76,16 @@ Usage (wherever the .csv/_summary.json files are - Jetson or laptop):
     python3 roofline_3d_avg.py model1 model2 model3 model4 \
         --peak-tflops 137.9 --peak-memory-gbs 239.7 \
         --out all_models_3d_avg_analytic.html
+
+  merged vLLM + Transformers, same machine (run from the dir above the
+  two engine folders; engine is auto-detected per base from the
+  summary's config.engine, falling back to the path):
+    python3 roofline.py vllm/b/llama_b001 ... tf/b/llama_b001 ... \
+        --peak-tflops 717.2 --peak-memory-gbs 4231.9 --fold-drain \
+        --topic "Roofline H200" --out all_models_h200_merged.html
+    Transformers points get a big surrounding ring (legend explains);
+    vLLM points are drawn as before. Same model = same color in both
+    engines.
 """
 import argparse
 import csv
@@ -102,6 +112,19 @@ Plotly.newPlot('plot', traces, layout, {{responsive: true}});
 """
 
 COLORS = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+
+# Engine handling for merged vLLM + Transformers figures: every base is
+# tagged 'vllm' or 'tf'; Transformers points get a big surrounding ring,
+# vLLM points stay plain. Same model = same color in both engines.
+ENGINE_LABEL = {"vllm": "vLLM", "tf": "TF"}
+
+# Fixed default 2D y-axis so EVERY figure (Thor / A100 / H200, vLLM /
+# TF, every batch) shares the same axis. 0.1 is the floor used on the
+# earlier JT/A100 figures (their yrange was [0.1:400]); the ceiling is
+# raised to 2200 because the H200 data outgrew 400 (llama vLLM b032
+# prefill = 493 TFLOP/s, and the 717.2 TFLOP/s H200 roof must stay
+# visible; 2200 ~ 3x that roof). --y-min/--y-max still override.
+Y_AXIS_DEFAULT = (0.1, 2200.0)
 
 # CSV columns that must parse as numbers for a row to be usable at all.
 REQUIRED = ("latency_s", "flops", "bytes", "tokens")
@@ -142,6 +165,28 @@ def load(base):
                 continue
             rows.append(row)
     return summary, rows
+
+
+def detect_engine(base, summary):
+    """Tag one base 'tf' or 'vllm', plus where the tag came from.
+
+    The transformers twin (step_metric_tf.py) writes
+    config.engine = "transformers" into the summary; the vLLM twin
+    writes no engine key. When the key is missing, fall back to the
+    base's path (…/tf/… vs …/vllm/…, or *_hf_* basenames), nearest
+    path component first. Default: vllm (the original pipeline).
+    """
+    engine_cfg = str(summary.get("config", {}).get("engine", "")).lower()
+    if engine_cfg:
+        tf_like = engine_cfg in ("transformers", "tf", "hf")
+        return ("tf" if tf_like else "vllm"), "summary config.engine"
+    for part in reversed(re.split(r"[\\/]", base.lower())):
+        if "vllm" in part:
+            return "vllm", "path"
+        if (part in ("tf", "hf") or "transformer" in part
+                or "_tf" in part or "tf_" in part or "_hf" in part):
+            return "tf", "path"
+    return "vllm", "default (no engine key, no path hint)"
 
 
 def check_row_consistency(base, rows):
@@ -407,6 +452,23 @@ def point_trace(model, phase, a, color, peak_t, bw, n_dropped, provenance):
     return trace
 
 
+def ring_trace_3d(model, phase, a, color):
+    """Big open ring around a Transformers point (3D counterpart of the
+    2D pt-6 ring). Same legendgroup as the point, so one legend click
+    toggles marker + ring together."""
+    size = max(6.0, min(16.0, (a["util"] or 50) / 100 * 10 + 6))
+    return {
+        "type": "scatter3d", "mode": "markers",
+        "name": f"{model} {phase} ring",
+        "legendgroup": f"{model} {phase}",
+        "showlegend": False, "hoverinfo": "skip",
+        "x": [a["ai"]], "y": [a["tflops"]],
+        "z": [a["pw"] if a["pw"] is not None else 0.0],
+        "marker": {"symbol": "circle-open", "size": size + 8,
+                   "color": color, "line": {"color": color, "width": 3}},
+    }
+
+
 def excluded_trace(model, rows, bw, bw_label):
     """Excluded drain steps, plotted as red X at their real coordinates.
 
@@ -471,101 +533,222 @@ def ridge_line(ridge, peak_t, z_max):
 # (classic paper roofline; same aggregates, gnuplot .dat/.gnuplot/PNG)
 # ---------------------------------------------------------------------------
 def _label_text(a):
-    """Compact per-point annotation: raw W (idle-subtracted W), util, tok/s."""
-    if a["pw"] is None:
-        pw = "?"
-    elif a["pw_dyn"] is not None:
-        pw = f"{a['pw']:.0f}W({a['pw_dyn']:.0f}W)"
-    else:
-        pw = f"{a['pw']:.0f}W"
+    """Compact per-point annotation: raw W, GPU util %, tok/s.
+
+    The idle-subtracted (dyn) wattage is deliberately NOT shown here any
+    more - it survives in the 3D hover and the console table.
+    """
+    pw = "?" if a["pw"] is None else f"{a['pw']:.0f}W"
     util = "" if a["util"] is None else f" {a['util']:.0f}%"
     tps = (f" {a['tps'] / 1000:.1f}k t/s" if a["tps"] >= 1000
            else f" {a['tps']:.0f} t/s")
     return pw + util + tps
 
 
+# Candidate label placements, tried in this order; offsets are in
+# character units of the terminal font. The first collision-free
+# candidate wins, so labels prefer the right side, then the left, then
+# the diagonals, then straight above/below.
+_LABEL_PLACEMENTS = (
+    ("E",  "left",   1.4,  0.0),
+    ("W",  "right", -1.4,  0.0),
+    ("NE", "left",   1.0,  0.95),
+    ("SE", "left",   1.0, -0.95),
+    ("NW", "right", -1.0,  0.95),
+    ("SW", "right", -1.0, -0.95),
+    ("N",  "center", 0.0,  1.25),
+    ("S",  "center", 0.0, -1.25),
+)
+
+
+def _place_labels(label_pts, obstacle_pts, x_lo, x_hi, y_lo, y_hi):
+    """One placement string per label so labels overlap neither each
+    other, nor any plotted marker, nor the plot border.
+
+    label_pts:    [(ai, tflops, text), ...] labelled points, plot order
+    obstacle_pts: [(ai, tflops, half_w_px, half_h_px), ...] marker boxes
+                  every label must clear (ringed / error-bar points get
+                  a bigger box)
+    Greedy: each label tries _LABEL_PLACEMENTS in order and takes the
+    first candidate that collides with nothing placed so far; if all
+    candidates collide it takes the least-overlapping one. Geometry is
+    approximated in output pixels (1500x950 pngcairo, 14pt labels) -
+    plenty to steer neighbouring labels to different sides.
+    """
+    ax_x0, ax_x1 = 100.0, 1452.0         # plot area in the 1500px canvas
+    ax_y0, ax_y1 = 128.0, 872.0          # below 3-line title, above tics
+    char_w, char_h = 9.6, 20.0           # gnuplot 'offset char' units
+    lbl_char_w, lbl_h = 8.4, 19.0        # 14pt label text metrics
+    lx0, lx1 = math.log10(x_lo), math.log10(x_hi)
+    ly0, ly1 = math.log10(y_lo), math.log10(y_hi)
+
+    def px(ai):
+        return ax_x0 + (math.log10(ai) - lx0) / (lx1 - lx0) * (ax_x1 - ax_x0)
+
+    def py(tf):
+        return ax_y1 - (math.log10(tf) - ly0) / (ly1 - ly0) * (ax_y1 - ax_y0)
+
+    def overlap(b1, b2):
+        w = min(b1[2], b2[2]) - max(b1[0], b2[0])
+        h = min(b1[3], b2[3]) - max(b1[1], b2[1])
+        return w * h if w > 0 and h > 0 else 0.0
+
+    obstacles = []
+    for ai, tf, half_w, half_h in obstacle_pts:
+        x, y = px(ai), py(tf)
+        obstacles.append((x - half_w, y - half_h, x + half_w, y + half_h))
+
+    placed, out = [], []
+    for ai, tf, text in label_pts:
+        x, y = px(ai), py(tf)
+        w = len(text) * lbl_char_w
+        best = None
+        for _name, justify, dx, dy in _LABEL_PLACEMENTS:
+            ax_, ay_ = x + dx * char_w, y - dy * char_h
+            if justify == "left":
+                bx0, bx1 = ax_, ax_ + w
+            elif justify == "right":
+                bx0, bx1 = ax_ - w, ax_
+            else:
+                bx0, bx1 = ax_ - w / 2, ax_ + w / 2
+            box = (bx0 - 2, ay_ - lbl_h / 2 - 2, bx1 + 2, ay_ + lbl_h / 2 + 2)
+            score = sum(overlap(box, o) for o in obstacles)
+            score += sum(overlap(box, p) for p in placed)
+            if box[0] < ax_x0:                  # keep text inside the plot
+                score += (ax_x0 - box[0]) * lbl_h * 3
+            if box[2] > ax_x1:
+                score += (box[2] - ax_x1) * lbl_h * 3
+            if box[1] < ax_y0:
+                score += (ax_y0 - box[1]) * w * 3
+            if box[3] > ax_y1:
+                score += (box[3] - ax_y1) * w * 3
+            if best is None or score < best[0]:
+                best = (score, justify, dx, dy, box)
+            if best[0] == 0.0:
+                break
+        _score, justify, dx, dy, box = best
+        placed.append(box)
+        out.append(f"{justify} offset char {dx:g},{dy:g}")
+    return out
+
+
 def write_2d(stem, table, excluded, peak_t, bw, measured_mode, inspection,
              point_labels=True, y_min=None, y_max=None, topic=None):
-    """table rows: (model, phase, aggregate, roof, naive, n_drop, ratio);
-    excluded: (model, ai, tflops) of drain steps, drawn as red X."""
+    """table rows: (model, engine, phase, aggregate, roof, naive,
+    n_drop, ratio); excluded: (model, ai, tflops) of vLLM drain steps,
+    drawn as red X. (inspection only changes console output upstream.)
+
+    Merged-engine drawing: Transformers ('tf') rows get a big open ring
+    around their marker plus one black key entry that explains it; vLLM
+    rows are drawn exactly as before. Same model = same color in both
+    engines, one legend entry per model.
+    """
     dat, statements = [], []
-    for model, phase, a, *_rest in table:
-        dat.append("\t".join((model, phase, f"{a['ai']:.6g}",
+    for model, engine, phase, a, *_rest in table:
+        dat.append("\t".join((model, engine, phase, f"{a['ai']:.6g}",
                               f"{a['tflops']:.6g}", f"{a['tf_std']:.6g}",
                               f"{a['tf_min']:.6g}", f"{a['tf_max']:.6g}",
                               _label_text(a))))
     for model, ai, tf in excluded:
-        dat.append("\t".join((model, "excluded", f"{ai:.6g}", f"{tf:.6g}",
-                              "0", f"{tf:.6g}", f"{tf:.6g}", "excluded")))
+        dat.append("\t".join((model, "vllm", "excluded", f"{ai:.6g}",
+                              f"{tf:.6g}", "0", f"{tf:.6g}", f"{tf:.6g}",
+                              "excluded")))
     with open(stem + ".dat", "w", encoding="utf-8") as f:
-        f.write("# model\tphase\tai\ttflops\tstd\tmin\tmax\tlabel\n")
+        f.write("# model\tengine\tphase\tai\ttflops\tstd\tmin\tmax\tlabel\n")
         f.write("\n".join(dat) + "\n")
 
-    # one color per model, square = prefill, circle = decode aggregate
-    models = []
-    for model, phase, a, *_rest in table:
+    # fixed default y-axis (Y_AXIS_DEFAULT) so EVERY figure shares one
+    # scale across machines, engines and batch sizes; flags override.
+    y_lo = Y_AXIS_DEFAULT[0] if y_min is None else y_min
+    y_hi = Y_AXIS_DEFAULT[1] if y_max is None else y_max
+    for model, engine, phase, a, *_rest in table:  # never clip silently
+        if not y_lo <= a["tflops"] <= y_hi:
+            print(f"[warn] {model} ({ENGINE_LABEL[engine]}) {phase} at "
+                  f"{a['tflops']:.3g} TFLOP/s lies outside the fixed "
+                  f"y-range [{y_lo:g}:{y_hi:g}] and will NOT be visible; "
+                  "override with --y-min/--y-max")
+    for _m, ai, tf in excluded:
+        if not y_lo <= tf <= y_hi:
+            print(f"[warn] excluded drain X at {tf:.3g} TFLOP/s lies "
+                  f"outside [{y_lo:g}:{y_hi:g}] and will not be visible "
+                  "(its forensic record is in the console output above)")
+
+    ridge = 1000.0 * peak_t / bw
+    ais = [r[3]["ai"] for r in table] + [e[1] for e in excluded]
+    x_lo, x_hi = min(1.0, min(ais) / 2), max(max(ais) * 3, ridge * 3)
+
+    models = []   # first-appearance order fixes each model's color
+    for model, engine, phase, a, *_rest in table:
         if model not in models:
             models.append(model)
+    any_tf = any(r[1] == "tf" for r in table)
+
+    # collision-aware label placement: with two engines merged, points
+    # can sit almost on top of each other (decode shares one AI), so
+    # each label picks the first free side (E, W, NE, SE, NW, SW, N, S).
+    # The roof line itself is an obstacle too, so labels don't sit on it.
+    roof_obstacles = []
+    for i in range(80):
+        x = 10 ** (math.log10(x_lo)
+                   + (math.log10(x_hi) - math.log10(x_lo)) * i / 79)
+        y = roof_at(x, peak_t, bw)
+        if y_lo <= y <= y_hi:
+            roof_obstacles.append((x, y, 14.0, 5.0))
+    placements = _place_labels(
+        [(r[3]["ai"], r[3]["tflops"], _label_text(r[3])) for r in table],
+        [(r[3]["ai"], r[3]["tflops"],
+          16.0 if r[1] == "tf" else 12.0,
+          26.0 if (r[2] == "decode" and r[3]["n"] > 1)
+          else (16.0 if r[1] == "tf" else 12.0)) for r in table]
+        + [(ai, tf, 10.0, 10.0) for _m, ai, tf in excluded]
+        + roof_obstacles,
+        x_lo, x_hi, y_lo, y_hi) if point_labels else []
+
+    titled = set()   # one legend entry per model, on its first statement
     for mi, model in enumerate(models):
         color = COLORS[mi % len(COLORS)]
-        for ri, (m, phase, a, *_rest) in enumerate(table):
+        for ri, (m, engine, phase, a, *_rest) in enumerate(table):
             if m != model:
                 continue
+            title = f"title '{model}'" if model not in titled else "notitle"
+            titled.add(model)
             if phase == "decode" and a["n"] > 1:
                 statements.append(
-                    f"'{stem}.dat' every ::{ri}::{ri} using 3:4:5 "
+                    f"'{stem}.dat' every ::{ri}::{ri} using 4:5:6 "
                     f"with yerrorbars lc rgb '{color}' lw 3 pt 7 ps 1.6 "
-                    f"title '{model}'")
+                    f"{title}")
             else:
                 pt = 5 if phase == "prefill" else 7
                 statements.append(
-                    f"'{stem}.dat' every ::{ri}::{ri} using 3:4 "
-                    f"with points lc rgb '{color}' pt {pt} ps 1.8 notitle")
-            if point_labels:
-                # points can cluster (decode shares one AI; prefill AIs
-                # sit close): alternate the label side per model so
-                # neighbors cannot collide.
-                if mi % 2 == 1:
-                    place = "right offset char -1.5,0"
-                else:
-                    place = "left offset char 1.5,0"
+                    f"'{stem}.dat' every ::{ri}::{ri} using 4:5 "
+                    f"with points lc rgb '{color}' pt {pt} ps 1.8 {title}")
+            if engine == "tf":  # big surrounding ring = Transformers
                 statements.append(
-                    f"'{stem}.dat' every ::{ri}::{ri} using 3:4:8 "
-                    f"with labels {place} font ',11' tc rgb '{color}' "
+                    f"'{stem}.dat' every ::{ri}::{ri} using 4:5 "
+                    f"with points lc rgb '{color}' pt 6 ps 3.4 lw 2 "
                     "notitle")
+            if point_labels:
+                statements.append(
+                    f"'{stem}.dat' every ::{ri}::{ri} using 4:5:9 "
+                    f"with labels {placements[ri]} font ',14' "
+                    f"tc rgb '{color}' notitle")
+    if any_tf:  # explain the ring once, in the key
+        statements.append("keyentry with points pt 6 ps 2 lw 2 "
+                          "lc rgb 'black' title 'Transformers = ringed'")
     if excluded:  # contiguous block appended after the aggregate rows
         lo, hi = len(table), len(table) + len(excluded) - 1
         statements.append(
-            f"'{stem}.dat' every ::{lo}::{hi} using 3:4 with points "
+            f"'{stem}.dat' every ::{lo}::{hi} using 4:5 with points "
             "lc rgb '#b0342c' pt 2 ps 2 lw 2 "
             "title 'excluded (drain, not averaged)'")
 
-    ridge = 1000.0 * peak_t / bw
-    ais = [r[2]["ai"] for r in table] + [e[1] for e in excluded]
-    tfs = ([r[2]["tf_min"] for r in table]
-           + [r[2]["tf_max"] for r in table] + [r[2]["tflops"] for r in table])
-    x_lo, x_hi = min(1.0, min(ais) / 2), max(max(ais) * 3, ridge * 3)
-    y_hi = peak_t * 3
-    if excluded:
-        y_hi = max(y_hi, max(e[2] for e in excluded) * 2)
-    y_lo = min(tfs) / 3
-    if y_min is not None:  # --y-min: fixed lower bound (align two runs)
-        y_lo = y_min
-    if y_max is not None:  # --y-max: fixed upper bound
-        y_hi = y_max
-    mode = ("MEASURED F/B (ncu, L2-level bytes)" if measured_mode
-            else "ANALYTIC F/B (formulas, cross-check only)")
-    if inspection:
-        mode += " - INSPECTION, no exclusion"
     bw_word = "L2" if measured_mode else "DRAM"
-    read_guide = "prefill (squares) + decode avg (circles; bar = +/-std)"
-    labels_note = "labels: raw W (dyn W after idle subtract) | util % | tok/s"
-    if topic:  # topic headline, then read-guide + mode on their own lines
-        title_txt = (topic.replace('"', "'") + "\\n" + read_guide
-                     + "\\n" + mode + "; " + labels_note)
-    else:
-        title_txt = ("Roofline - " + read_guide + "\\n" + mode + "; "
-                     + labels_note)
+    # three-line title: topic / marker guide / label guide. The
+    # ANALYTIC-vs-MEASURED mode tag was removed from the figure at
+    # Sean's request (2026-08-04); it still prints to the console.
+    head = topic.replace('"', "'") if topic else "Roofline"
+    title_txt = (head + "\\nPrefill (square) + Decode (circle)"
+                 + "\\nlabels: raw W | GPU util % | tok/s")
     script = f"""set terminal pngcairo size 1500,950 font 'DejaVu Sans,16'
 set output '{stem}.png'
 set datafile separator '\\t'
@@ -631,7 +814,10 @@ def main() -> int:
     p.add_argument("--min-latency-frac", type=float, default=0.5,
                    help="decode rows shorter than this fraction of the "
                         "median latency are excluded as vLLM v1 drain "
-                        "steps (default 0.5; drain is ~0.01x)")
+                        "steps (default 0.5; drain is ~0.01x). Applies "
+                        "to vLLM bases ONLY - the transformers twin has "
+                        "no drain step, and its fast-but-real steps "
+                        "must not be cut")
     p.add_argument("--roof-tolerance", type=float, default=0.02,
                    help="abort if a plotted point exceeds the roof by more "
                         "than this relative margin (default 2%%)")
@@ -657,15 +843,16 @@ def main() -> int:
                         "artifact can be studied in place. Never for "
                         "publication figures")
     p.add_argument("--y-min", type=float, default=None,
-                   help="fix the 2D y-axis (TFLOP/s) lower bound instead of "
-                        "the auto min-plotted/3. Pass the SAME value on two "
-                        "runs to give them identical axes. NOTE: every decode "
-                        "point here sits below 1 TFLOP/s, so --y-min 1 crops "
-                        "ALL decode circles off both plots")
+                   help="override the 2D y-axis (TFLOP/s) lower bound "
+                        f"(default {Y_AXIS_DEFAULT[0]:g}, FIXED so every "
+                        "figure across machines/engines/batches shares "
+                        "one scale). Points outside the range are "
+                        "reported, never clipped silently")
     p.add_argument("--y-max", type=float, default=None,
-                   help="fix the 2D y-axis (TFLOP/s) upper bound instead of "
-                        "the auto 3x peak (already identical across runs that "
-                        "share --peak-tflops)")
+                   help="override the 2D y-axis (TFLOP/s) upper bound "
+                        f"(default {Y_AXIS_DEFAULT[1]:g}, sized so the "
+                        "717 TFLOP/s H200 roof and its b032 prefill "
+                        "points stay on-chart)")
     p.add_argument("--topic", default=None,
                    help="headline for BOTH figures, e.g. 'roofline a100 vllm' "
                         "or 'roofline jetson thor transformers' (quote "
@@ -716,7 +903,8 @@ def main() -> int:
             raise SystemExit(f"[error] {msg}")
 
     traces, points, table, excluded_pts = [], [], [], []
-    for i, base in enumerate(args.bases):
+    model_colors = {}   # same model -> same color in BOTH engines
+    for base in args.bases:
         try:
             summary, rows = load(base)
         except OSError as exc:
@@ -724,11 +912,26 @@ def main() -> int:
             continue
         check_row_consistency(base, rows)
         model = summary.get("config", {}).get("model", base).split("/")[-1]
-        color = COLORS[i % len(COLORS)]
+        engine, engine_src = detect_engine(base, summary)
+        eng_disp = ENGINE_LABEL[engine]
+        disp = f"{model} ({eng_disp})"   # 3D trace/hover name
+        print(f"[info] {base}: engine {eng_disp} (from {engine_src})")
+        if model not in model_colors:
+            model_colors[model] = COLORS[len(model_colors) % len(COLORS)]
+        color = model_colors[model]
 
         prefill = [r for r in rows if r["phase"] == "prefill"]
         decode = [r for r in rows if r["phase"] == "decode"]
-        kept, dropped = split_drain(decode, args.min_latency_frac)
+        if engine == "tf":
+            # Transformers twin: exactly gen_len real forwards - the
+            # vLLM v1 output-drain iteration does not exist there, so
+            # the latency cut must not run. It would misfire on fast-
+            # but-real steps (H200 decode steps 1-7 run ~9 ms vs the
+            # ~27 ms median - real forwards, ~1/3 x median, nothing
+            # like the ~0.04 x median bookkeeping drain step).
+            kept, dropped = decode, []
+        else:
+            kept, dropped = split_drain(decode, args.min_latency_frac)
         if args.no_exclude:
             kept, dropped = decode, []
         for r in dropped:  # full forensic record, so this is investigable
@@ -821,13 +1024,15 @@ def main() -> int:
                     f"{a['tf_max']:.3g} TFLOP/s, above the {roof:.3g} roof "
                     "- a drain-like spike survived filtering; investigate "
                     "before publishing")
-            table.append((model, phase, a, roof, naive.get(phase),
+            table.append((model, engine, phase, a, roof, naive.get(phase),
                           n_drop, ratio_note.get(phase)))
-            traces.append(point_trace(model, phase, a, color, peak_t, bw,
+            traces.append(point_trace(disp, phase, a, color, peak_t, bw,
                                       n_drop, prov[phase]))
+            if engine == "tf":  # ring = Transformers, in 3D too
+                traces.append(ring_trace_3d(disp, phase, a, color))
             points.append(a)
         if dropped and not args.hide_excluded and not args.fold_drain:
-            traces.append(excluded_trace(model, dropped, bw, bw_label))
+            traces.append(excluded_trace(disp, dropped, bw, bw_label))
             excluded_pts += [(model, r["ai_flops_per_byte"],
                               r["achieved_tflops"]) for r in dropped]
 
@@ -836,11 +1041,12 @@ def main() -> int:
 
     # --- validation table ---------------------------------------------
     print()
-    print(f"{'model':<28}{'phase':<9}{'n':>4}{'AI':>7}{'TF/s':>8}"
+    print(f"{'model':<28}{'eng':<6}{'phase':<9}{'n':>4}{'AI':>7}{'TF/s':>8}"
           f"{'std':>8}{'min':>8}{'max':>8}"
           f"{'roof':>8}{'%roof':>7}{'GB/s':>8}{'tok/s':>8}{'W':>7}{'drop':>5}")
-    for model, phase, a, roof, naive_tf, n_drop, ratio in table:
-        print(f"{model:<28}{phase:<9}{a['n']:>4}{a['ai']:>7.3g}"
+    for model, engine, phase, a, roof, naive_tf, n_drop, ratio in table:
+        print(f"{model:<28}{ENGINE_LABEL[engine]:<6}{phase:<9}"
+              f"{a['n']:>4}{a['ai']:>7.3g}"
               f"{a['tflops']:>8.3g}"
               f"{a['tf_std']:>8.2g}{a['tf_min']:>8.3g}{a['tf_max']:>8.3g}"
               f"{roof:>8.3g}"
@@ -849,11 +1055,11 @@ def main() -> int:
               f"{(a['pw'] if a['pw'] is not None else float('nan')):>7.3g}"
               f"{n_drop:>5}")
         if ratio:
-            print(f"{'':<28}[check] measured vs analytical: "
+            print(f"{'':<34}[check] measured vs analytical: "
                   f"F {ratio[0]:.2f}x  B {ratio[1]:.2f}x "
                   "(F should be ~1; B >1 means L2 reuse traffic)")
         if n_drop and naive_tf and naive_tf > 1.1 * a["tflops"]:
-            print(f"{'':<28}[info] naive mean over ALL {phase} rows would "
+            print(f"{'':<34}[info] naive mean over ALL {phase} rows would "
                   f"be {naive_tf:.3g} TF/s ({naive_tf / a['tflops']:.2f}x); "
                   "the excluded drain step caused that inflation")
     print()
@@ -868,17 +1074,14 @@ def main() -> int:
     traces.insert(0, roof_surface(peak_t, bw, x_min, x_max, z_max, roof_name))
     traces.insert(1, ridge_line(ridge, peak_t, z_max))
 
-    mode_tag = (" - MEASURED F/B (ncu, L2-level bytes)" if measured_mode
-                else " - ANALYTIC F/B (formulas, cross-check only)")
-    if args.no_exclude:
-        mode_tag += " - INSPECTION, no exclusion"
+    # the ANALYTIC/MEASURED mode tag is console-only now (removed from
+    # both figure titles at Sean's request, 2026-08-04)
     if args.topic:
-        title3d = (f"{args.topic}{mode_tag} (hover for metrics; click "
-                   "legend to toggle)")
+        title3d = (f"{args.topic} (hover for metrics; click legend "
+                   "to toggle)")
     else:
         title3d = ("Energy roofline - prefill + decode average per "
-                   f"model{mode_tag} (hover for metrics; click legend "
-                   "to toggle)")
+                   "model (hover for metrics; click legend to toggle)")
     layout = {
         "title": {"text": title3d},
         "scene": {
